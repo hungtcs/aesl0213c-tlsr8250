@@ -1,0 +1,23 @@
+{
+  "name": "aesl0213c-intro-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion intro video for AESL0213C-TLSR8250 e-paper ESL reverse engineering project",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render IntroVideo out/aesl0213c-intro.mp4",
+    "tts": "../.venv/bin/python scripts/generate_tts.py",
+    "build:all": "npm run tts && npm run render"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.290",
+    "@remotion/transitions": "^4.0.290",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "^4.0.290"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.8.2"
+  }
+}

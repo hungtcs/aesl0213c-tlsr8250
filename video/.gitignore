@@ -1,0 +1,10 @@
+node_modules/
+out/
+.remotion/
+.pnpm-store/
+public/audio/
+public/audio_ble_uart/
+public/demos/
+assets/
+*.mp4
+*.webm

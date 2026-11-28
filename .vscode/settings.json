@@ -1,0 +1,6 @@
+{
+  "[markdown]": {
+    "editor.wordWrap": "off"
+  },
+  "cSpell.words": ["jsqr", "pyserial", "qrcode"]
+}

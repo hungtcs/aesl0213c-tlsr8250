@@ -1,0 +1,14 @@
+services:
+  macless-haystack:
+    image: christld/macless-haystack:latest
+    container_name: macless-haystack
+    restart: unless-stopped
+    ports:
+      - "6176:6176"
+    volumes:
+      - mh_data:/app/endpoint/data
+    stdin_open: true
+    tty: true
+
+volumes:
+  mh_data:

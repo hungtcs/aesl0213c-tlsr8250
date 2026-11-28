@@ -1,0 +1,14 @@
+.venv/
+toolchain/
+firmware/backup_*.bin
+*.tar.bz2
+*.rar
+*.o
+*.abs
+*.elf
+*.map
+*.lst
+examples/*/build/
+.env
+__pycache__/
+.pnpm-store

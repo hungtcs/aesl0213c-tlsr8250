@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""
+Generate Chinese TTS voiceover MP3s for each scene using edge-tts,
+measure exact audio durations via ffprobe, and emit src/voiceoverData.ts
+for frame-accurate Remotion timeline + synchronized subtitles.
+"""
+
+import asyncio
+import json
+import math
+import subprocess
+from pathlib import Path
+import edge_tts
+
+VOICE = "zh-CN-YunxiNeural"
+RATE = "+6%"
+FPS = 30
+LEAD_FRAMES = 10   # 0.33s breathing room before narration starts
+TAIL_FRAMES = 18   # 0.60s pause after narration ends
+
+VIDEO_DIR = Path(__file__).resolve().parent.parent
+AUDIO_DIR = VIDEO_DIR / "public" / "audio"
+OUT_TS = VIDEO_DIR / "src" / "voiceoverData.ts"
+
+SCENES = [
+    {
+        "id": "scene1_intro",
+        "chapter": "01 / 项目概览",
+        "lines": [
+            "你手里有闲置的超市电子墨水屏价签吗？",
+            "今天介绍一个完整的开源逆向与开发项目，",
+            "把这款阿里云 2.13 寸黑白红三色价签，彻底改造成全能蓝牙 5.0 开源开发板。",
+        ],
+    },
+    {
+        "id": "scene2_hardware",
+        "chapter": "02 / 硬件规格",
+        "lines": [
+            "拆开外壳，主板丝印为 ZK_TESR21S_V2.1，核心是一颗泰凌微 TLSR8250 芯片：",
+            "48 兆赫兹 32 位内核、512KB Flash 与 48KB 内存，支持蓝牙 5.0 与 0.4 微安深度休眠，",
+            "搭配 2.13 寸黑白红三色墨水屏，硬件素质相当出色。",
+        ],
+    },
+    {
+        "id": "scene3_reverse",
+        "chapter": "03 / 逆向突破",
+        "lines": [
+            "通过反汇编原厂固件与实机点屏验证，项目完整梳理了全部 GPIO 引脚与驱动指令。",
+            "这里有个关键避坑点：屏幕物理宽度是 122 像素，但显存每行必须 8 像素对齐到 128 像素，",
+            "最右侧 6 像素为不可见区，否则画面会出现斜向撕裂。",
+        ],
+    },
+    {
+        "id": "scene4_flash",
+        "chapter": "04 / SWS 单线烧录",
+        "lines": [
+            "烧录不需要专用烧录器，只需普通 CH343 串口模块和一颗 1 千欧电阻。",
+            "板子 RXD 和 TXD 均不接，TX 串 1 千欧电阻接 SWS，RX 并联在电阻靠板子侧，共地后将 RTS 接 3.3V 即可自动控电复位。",
+            "刷机前先备份原厂固件，既可用一键脚本，也能打开内置浏览器 Web Serial 页面直接刷写。",
+        ],
+    },
+    {
+        "id": "scene5_epd_pwa",
+        "chapter": "05 / 玩法一：无线墨水屏",
+        "lines": [
+            "刷入开源蓝牙墨水屏固件后，配合内置的 ZK Ink 手机 PWA 应用，",
+            "通过蓝牙就能一键配置 128 乘 250 对齐参数并无线刷图。",
+            "内置三色日历、倒数日、工位桌牌和图片三色抖动算法，轻松变身桌面颜值神器。",
+        ],
+    },
+    {
+        "id": "scene6_ble_uart",
+        "chapter": "06 / 玩法二：BLE 串口透传",
+        "lines": [
+            "第二个玩法是正式版蓝牙 5.0 串口透传固件，支持 247 字节大 MTU 与双通用透传服务。",
+            "内置完整 AT 指令集、14 位片上电压采样与 Flash 掉电保存，",
+            "搭配网页双通道控制台，还能通过浏览器直接完成蓝牙无线 OTA 升级。",
+        ],
+    },
+    {
+        "id": "scene7_findmy",
+        "chapter": "07 / 玩法三：FindMy 追踪器",
+        "lines": [
+            "即使屏幕摔碎了也别扔！刷入超低功耗 FindMy 追踪器固件，",
+            "用配套脚本注入你自己的 OpenHaystack 公钥并自动重算校验，",
+            "就能变身苹果离线查找追踪器。片内深度保持休眠两秒广播一次，两颗纽扣电池续航数月。",
+        ],
+    },
+    {
+        "id": "scene8_dev_outro",
+        "chapter": "08 / 开源与二次开发",
+        "lines": [
+            "面向开发者，仓库内置了精简裸机与蓝牙 SDK，涵盖从 1.5KB 点屏到完整蓝牙工程的示例，",
+            "只需三行 Makefile 就能新建项目并一键编译烧录。",
+            "所有硬件资料、预编译固件、网页工具与源码均已开源至 GitHub，按需自取——顺便一提，你正在看的这个视频本身，也是用 Remotion 代码写出来一起开源的。",
+        ],
+    },
+]
+
+
+def get_duration_sec(mp3_path: Path) -> float:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(mp3_path),
+    ]
+    out = subprocess.check_output(cmd, text=True).strip()
+    return float(out)
+
+
+async def generate_all():
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    OUT_TS.parent.mkdir(parents=True, exist_ok=True)
+
+    results = {}
+    total_sec = 0.0
+
+    for scene in SCENES:
+        sid = scene["id"]
+        lines = scene["lines"]
+        full_text = "".join(lines)
+        mp3_path = AUDIO_DIR / f"{sid}.mp3"
+
+        communicate = edge_tts.Communicate(full_text, VOICE, rate=RATE)
+        await communicate.save(str(mp3_path))
+
+        dur = get_duration_sec(mp3_path)
+        total_sec += dur
+        audio_frames = math.ceil(dur * FPS)
+        duration_frames = LEAD_FRAMES + audio_frames + TAIL_FRAMES
+
+        # Distribute subtitle cues proportionally by character length
+        weights = [max(len(line), 1) for line in lines]
+        total_w = sum(weights)
+        cues = []
+        cursor = LEAD_FRAMES
+        for idx, line in enumerate(lines):
+            if idx == len(lines) - 1:
+                end_f = LEAD_FRAMES + audio_frames
+            else:
+                span = round(audio_frames * (weights[idx] / total_w))
+                end_f = cursor + span
+            cues.append(
+                {
+                    "text": line,
+                    "startFrame": cursor,
+                    "endFrame": end_f,
+                }
+            )
+            cursor = end_f
+
+        results[sid] = {
+            "id": sid,
+            "chapter": scene["chapter"],
+            "audioFile": f"audio/{sid}.mp3",
+            "durationSec": round(dur, 3),
+            "leadFrames": LEAD_FRAMES,
+            "durationInFrames": duration_frames,
+            "cues": cues,
+        }
+        print(f"[OK] {sid}: {dur:.2f}s ({duration_frames} frames)")
+
+    ts_content = (
+        "// Auto-generated by scripts/generate_tts.py\n"
+        "export interface SubtitleCue {\n"
+        "  text: string;\n"
+        "  startFrame: number;\n"
+        "  endFrame: number;\n"
+        "}\n\n"
+        "export interface SceneVoiceover {\n"
+        "  id: string;\n"
+        "  chapter: string;\n"
+        "  audioFile: string;\n"
+        "  durationSec: number;\n"
+        "  leadFrames: number;\n"
+        "  durationInFrames: number;\n"
+        "  cues: readonly SubtitleCue[];\n"
+        "}\n\n"
+        f"export const FPS = {FPS};\n\n"
+        f"export const VOICEOVER_DATA = {json.dumps(results, ensure_ascii=False, indent=2)} as const;\n\n"
+        "export type SceneId = keyof typeof VOICEOVER_DATA;\n"
+    )
+    OUT_TS.write_text(ts_content, encoding="utf-8")
+    print(f"\nGenerated {OUT_TS} (total audio: {total_sec:.2f}s)")
+
+
+if __name__ == "__main__":
+    asyncio.run(generate_all())
